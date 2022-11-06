@@ -1,0 +1,51 @@
+name: PostgreSQL deploy
+hosts: all
+vars:
+  postgres_user: postgresql
+  postgres_group: postgresql
+  postgresql_version: '12'
+  postgres_packages:
+  - 'postgresql-{{ postgresql_version }}'
+  - postgresql-contrib
+  - libpq-dev
+  postgresql_dir: '/var/lib/postgresql/{{ postgresql_version}}/main'
+  postgresql_config: '/etc/postgresql/{{ postgresql_version }}/main'
+  db_name: test
+  db_user: testuser
+
+tasks:
+  - name: Install PostgreSQL packages
+  apt:
+    name: "{{ postgresql_packages }}"
+    state: present
+
+- name: Check if PostgreSQL database is initialized.
+  stat:
+    path: "{{ postgresql_data_dir }}/PG_VERSION"
+  register: pgdata_dir_version
+
+- name: Initialize postgresql
+    shell: "postgresql-setup initdb"
+
+- name: Start postgresql service
+    service: 
+      name: postgresql 
+      state: started 
+      enabled: yes
+
+- name: Create database
+    postgresql_db:
+      state: present
+      name: test
+    become: yes
+    become_user: postgres
+
+- name: Grand db user
+    postgresql_privs:
+      type: database
+      database: '{{ db_name }}'
+      roles: '{{ db_user }}'
+      grant_option: no
+      privs: all
+    become: yes
+    become_user: postgres
