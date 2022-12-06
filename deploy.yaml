@@ -1,51 +1,122 @@
-name: PostgreSQL deploy
-hosts: all
-vars:
-  postgres_user: postgresql
-  postgres_group: postgresql
-  postgresql_version: '12'
-  postgres_packages:
-  - 'postgresql-{{ postgresql_version }}'
-  - postgresql-contrib
-  - libpq-dev
-  postgresql_dir: '/var/lib/postgresql/{{ postgresql_version}}/main'
-  postgresql_config: '/etc/postgresql/{{ postgresql_version }}/main'
-  db_name: test
-  db_user: testuser
+- name: PostgreSQL deploy
+  hosts: all
+  become: yes
+  vars:
+    postgres_user: postgresql
+    postgres_group: postgresql
+    postgresql_version: '14'
+    postgres_packages:
+      - 'postgresql-{{ postgresql_version }}'
+      - postgresql-contrib
+      - libpq-dev
+    postgresql_dir: '/var/lib/postgresql/{{ postgresql_version }}/main'
+    postgresql_config: '/etc/postgresql/{{ postgresql_version }}/main'
+    postgresql_bin_path: '/usr/lib/postgresql/14/bin'
+    postgresql_unix_socket_directories: '/var/run/postgresql'
+    postgresql_global_config_options:
+      - option: unix_socket_directories
+        value: '{{ postgresql_unix_socket_directories | join(",") }}'
+      - option: log_directory
+    value: 'log'
+    db_name: test
+    db_user: testuser
+    db_password: testpassword
 
-tasks:
-  - name: Install PostgreSQL packages
-  apt:
-    name: "{{ postgresql_packages }}"
-    state: present
+  tasks:
+    - name: Install PostgreSQL packages
+      apt:
+        name: '{{ item }}'
+        state: present
+      with_items:
+        - postgresql-{{ postgresql_version }}
+        - postgresql-contrib
+        - libpq-dev
+        - python3-psycopg2
+        - acl
 
-- name: Check if PostgreSQL database is initialized.
-  stat:
-    path: "{{ postgresql_data_dir }}/PG_VERSION"
-  register: pgdata_dir_version
+    # - name: Initialize postgresql
+    #   ansible.builtin.stat:
+    #     path: "/var/lib/pgsql/data/pg_hba.conf"
 
-- name: Initialize postgresql
-    shell: "postgresql-setup initdb"
+    - name: Check if PostgreSQL database is initialized.
+      stat:
+        path: "{{ postgresql_dir }}/PG_VERSION"
+      register: pgdata_dir_version
 
-- name: Start postgresql service
-    service: 
-      name: postgresql 
-      state: started 
-      enabled: yes
+    - name: Ensure PostgreSQL database is initialized.
+      command: "{{ postgresql_bin_path }}/initdb -D {{ postgresql_dir }}"
+      when: not pgdata_dir_version.stat.exists
+      become: true
+      become_user: postgres
 
-- name: Create database
-    postgresql_db:
-      state: present
-      name: test
-    become: yes
-    become_user: postgres
+    - name: Start postgresql service
+      service: 
+        name: postgresql 
+        state: started 
+        enabled: yes
 
-- name: Grand db user
-    postgresql_privs:
-      type: database
-      database: '{{ db_name }}'
-      roles: '{{ db_user }}'
-      grant_option: no
-      privs: all
-    become: yes
-    become_user: postgres
+    - name: Configure global settings.
+      template:
+        src: "postgresql.conf.j2"
+        dest: "{{ postgresql_config }}/postgresql.conf"
+        owner: postgres
+        group: postgres
+        mode: 0600
+
+    - name: Start postgresql service
+      service: 
+        name: postgresql 
+        state: restarted 
+        enabled: yes
+
+    - name: Configure host based authentication (if entries are configured).
+      template:
+        src: "pg_hba.conf.j2"
+        dest: "{{ postgresql_config }}/pg_hba.conf"
+        owner: postgres
+        group: postgres
+        mode: 0600
+
+    - name: Start postgresql service
+      service: 
+        name: postgresql 
+        state: restarted 
+        enabled: yes
+
+    - name: Create database
+      community.postgresql.postgresql_db:
+        state: present
+        name: '{{ db_name }}'
+      become: yes
+      become_user: postgres
+
+    - name: "Create db user"
+      community.postgresql.postgresql_user:
+        state: present
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+      become: yes
+      become_user: postgres
+
+    - name: Grand db user
+      community.postgresql.postgresql_privs:
+        type: database
+        database: '{{ db_name }}'
+        roles: '{{ db_user }}'
+        grant_option: no
+        privs: all
+      become: yes
+      become_user: postgres
+
+    - name: Push data
+      copy:
+        src: /data/data.sql
+        dest: /tmp/data.sql
+
+    - name: Upload data
+      community.postgresql.postgresql_script:
+        db: '{{ db_name }}'
+        path: /tmp/data.sql
+        named_args:
+          id_val: 1
+          story_val: test
