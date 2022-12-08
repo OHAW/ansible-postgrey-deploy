@@ -1,96 +1,47 @@
 - name: PostgreSQL deploy
   hosts: all
   become: yes
+  gather_facts: no
   vars:
-    postgres_user: postgresql
-    postgres_group: postgresql
     postgresql_version: '14'
-    postgres_packages:
-      - 'postgresql-{{ postgresql_version }}'
-      - postgresql-contrib
-      - libpq-dev
-    postgresql_dir: '/var/lib/postgresql/{{ postgresql_version }}/main'
-    postgresql_config: '/etc/postgresql/{{ postgresql_version }}/main'
-    postgresql_bin_path: '/usr/lib/postgresql/14/bin'
-    postgresql_unix_socket_directories: '/var/run/postgresql'
-    postgresql_global_config_options:
-      - option: unix_socket_directories
-        value: '{{ postgresql_unix_socket_directories | join(",") }}'
-      - option: log_directory
+    postgresql_dir: '/var/lib/postgresql/'
     value: 'log'
     db_name: test
     db_user: testuser
     db_password: testpassword
 
   tasks:
-    - name: Install PostgreSQL packages
+
+    # - name: repository configuration
+    #   shell: echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+
+    # - name: signing key
+    #   shell: wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+
+    
+    - name: install postgresql package
       apt:
         name: '{{ item }}'
         state: present
       with_items:
-        - postgresql-{{ postgresql_version }}
-        - postgresql-contrib
+        - 'postgresql-{{ postgresql_version }}'
         - libpq-dev
         - python3-psycopg2
         - acl
 
-    # - name: Initialize postgresql
-    #   ansible.builtin.stat:
-    #     path: "/var/lib/pgsql/data/pg_hba.conf"
-
-    - name: Check if PostgreSQL database is initialized.
-      stat:
-        path: "{{ postgresql_dir }}/PG_VERSION"
-      register: pgdata_dir_version
-
-    - name: Ensure PostgreSQL database is initialized.
-      command: "{{ postgresql_bin_path }}/initdb -D {{ postgresql_dir }}"
-      when: not pgdata_dir_version.stat.exists
-      become: true
-      become_user: postgres
-
-    - name: Start postgresql service
-      service: 
-        name: postgresql 
-        state: started 
-        enabled: yes
-
-    - name: Configure global settings.
-      template:
-        src: "postgresql.conf.j2"
-        dest: "{{ postgresql_config }}/postgresql.conf"
-        owner: postgres
-        group: postgres
-        mode: 0600
-
-    - name: Start postgresql service
-      service: 
-        name: postgresql 
-        state: restarted 
-        enabled: yes
-
-    - name: Configure host based authentication (if entries are configured).
-      template:
-        src: "pg_hba.conf.j2"
-        dest: "{{ postgresql_config }}/pg_hba.conf"
-        owner: postgres
-        group: postgres
-        mode: 0600
-
-    - name: Start postgresql service
-      service: 
-        name: postgresql 
-        state: restarted 
-        enabled: yes
-
-    - name: Create database
-      community.postgresql.postgresql_db:
+    - name: create user for test database
+      user:
+        name: '{{ db_user }}'
         state: present
+
+    - name: create database
+      community.postgresql.postgresql_db:
         name: '{{ db_name }}'
-      become: yes
+        encoding: UTF-8
+        template: template0
       become_user: postgres
 
-    - name: "Create db user"
+    - name: create database user
       community.postgresql.postgresql_user:
         state: present
         name: "{{ db_user }}"
@@ -98,7 +49,7 @@
       become: yes
       become_user: postgres
 
-    - name: Grand db user
+    - name: grand database user
       community.postgresql.postgresql_privs:
         type: database
         database: '{{ db_name }}'
@@ -108,15 +59,43 @@
       become: yes
       become_user: postgres
 
+    - name: create schema
+      community.postgresql.postgresql_schema:
+        db: '{{ db_name }}'
+        name: test
+        owner: '{{ db_user }}'
+      become: yes
+      become_user: postgres
+
+    - name: create a new tablespace called acme and set bob as an its owner
+      community.postgresql.postgresql_tablespace:
+        state: present
+        name: test
+        owner: '{{ db_user }}'
+        location: '{{ postgresql_dir }}{{ postgresql_version }}/main'
+      become: yes
+      become_user: postgres
+
+    - name: Create table
+      community.postgresql.postgresql_table:
+        db: '{{ db_name }}'
+        tablespace: test
+        table: test_data
+        columns:
+        - numder int not null
+        - somewords varchar unique not null
+        owner: '{{ db_user }}'
+      become: yes
+      become_user: postgres
+
     - name: Push data
       copy:
-        src: /data/data.sql
+        src: data.sql
         dest: /tmp/data.sql
 
     - name: Upload data
       community.postgresql.postgresql_script:
         db: '{{ db_name }}'
         path: /tmp/data.sql
-        named_args:
-          id_val: 1
-          story_val: test
+      become: yes
+      become_user: postgres
